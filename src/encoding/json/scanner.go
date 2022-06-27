@@ -29,7 +29,9 @@ func Valid(data []byte) bool {
 // scan is passed in for use by checkValid to avoid an allocation.
 // checkValid returns nil or a SyntaxError.
 func checkValid(data []byte, scan *scanner) error {
+	// 重置scanner
 	scan.reset()
+	// 遍历所有byte
 	for _, c := range data {
 		scan.bytes++
 		if scan.step(scan, c) == scanError {
@@ -259,6 +261,7 @@ func stateBeginStringOrEmpty(s *scanner, c byte) int {
 		s.parseState[n-1] = parseObjectValue
 		return stateEndValue(s, c)
 	}
+	// { 后一定是 "
 	return stateBeginString(s, c)
 }
 

@@ -155,8 +155,10 @@ import (
 // handle them. Passing cyclic structures to Marshal will result in
 // an error.
 func Marshal(v any) ([]byte, error) {
+	// 获取解析器
 	e := newEncodeState()
 
+	// 序列化
 	err := e.marshal(v, encOpts{escapeHTML: true})
 	if err != nil {
 		return nil, err
@@ -320,6 +322,7 @@ type jsonError struct{ error }
 
 func (e *encodeState) marshal(v any, opts encOpts) (err error) {
 	defer func() {
+		// 异常处理
 		if r := recover(); r != nil {
 			if je, ok := r.(jsonError); ok {
 				err = je.error
@@ -328,6 +331,7 @@ func (e *encodeState) marshal(v any, opts encOpts) (err error) {
 			}
 		}
 	}()
+	// 反射编码
 	e.reflectValue(reflect.ValueOf(v), opts)
 	return nil
 }
@@ -356,6 +360,7 @@ func isEmptyValue(v reflect.Value) bool {
 }
 
 func (e *encodeState) reflectValue(v reflect.Value, opts encOpts) {
+	// 获取对于type对应的编码函数并进行编码
 	valueEncoder(v)(e, v, opts)
 }
 
@@ -366,18 +371,24 @@ type encOpts struct {
 	escapeHTML bool
 }
 
+// 编码函数模板
 type encoderFunc func(e *encodeState, v reflect.Value, opts encOpts)
 
+// 缓存type对应的编码函数
 var encoderCache sync.Map // map[reflect.Type]encoderFunc
 
 func valueEncoder(v reflect.Value) encoderFunc {
 	if !v.IsValid() {
+		// 空值 -> null
 		return invalidValueEncoder
 	}
+	// 获取非空type的编码函数
 	return typeEncoder(v.Type())
 }
 
+// 根据type获取或生成编码函数
 func typeEncoder(t reflect.Type) encoderFunc {
+	// 获取该type的编码函数缓存
 	if fi, ok := encoderCache.Load(t); ok {
 		return fi.(encoderFunc)
 	}
@@ -392,16 +403,22 @@ func typeEncoder(t reflect.Type) encoderFunc {
 	)
 	wg.Add(1)
 	fi, loaded := encoderCache.LoadOrStore(t, encoderFunc(func(e *encodeState, v reflect.Value, opts encOpts) {
+		// 无该type对应的编码函数 -> 等待其就绪后调用
+		// 并发情况下后续协程能获取到编码函数，但是会被阻塞，直到准备就绪
+		// 这个匿名函数用于临时包装，用于在获取编码函数期间的请求阻塞
 		wg.Wait()
 		f(e, v, opts)
 	}))
+	// 存在该类型的编码函数 -> 直接返回
 	if loaded {
 		return fi.(encoderFunc)
 	}
 
 	// Compute the real encoder and replace the indirect func with it.
 	f = newTypeEncoder(t, true)
+	// 声明该编码函数准备就绪
 	wg.Done()
+	// 替换缓存的带阻塞功能的匿名函数
 	encoderCache.Store(t, f)
 	return f
 }
@@ -413,24 +430,30 @@ var (
 
 // newTypeEncoder constructs an encoderFunc for a type.
 // The returned encoder only checks CanAddr when allowAddr is true.
+// 获取type对应的编码器
 func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
 	// If we have a non-pointer value whose type implements
 	// Marshaler with a value receiver, then we're better off taking
 	// the address of the value - otherwise we end up with an
 	// allocation as we cast the value to an interface.
+	// *type实现了Marshaler接口
 	if t.Kind() != reflect.Pointer && allowAddr && reflect.PointerTo(t).Implements(marshalerType) {
 		return newCondAddrEncoder(addrMarshalerEncoder, newTypeEncoder(t, false))
 	}
+	// type实现了Marshaler接口
 	if t.Implements(marshalerType) {
 		return marshalerEncoder
 	}
+	// *type实现了TextMarshaler接口
 	if t.Kind() != reflect.Pointer && allowAddr && reflect.PointerTo(t).Implements(textMarshalerType) {
 		return newCondAddrEncoder(addrTextMarshalerEncoder, newTypeEncoder(t, false))
 	}
+	// type实现了TextMarshaler接口
 	if t.Implements(textMarshalerType) {
 		return textMarshalerEncoder
 	}
 
+	// 根据 type 选择不同的编码函数
 	switch t.Kind() {
 	case reflect.Bool:
 		return boolEncoder
@@ -708,10 +731,12 @@ func isValidNumber(s string) bool {
 }
 
 func interfaceEncoder(e *encodeState, v reflect.Value, opts encOpts) {
+	// 空值
 	if v.IsNil() {
 		e.WriteString("null")
 		return
 	}
+	// 取值递归编码
 	e.reflectValue(v.Elem(), opts)
 }
 
@@ -723,6 +748,7 @@ type structEncoder struct {
 	fields structFields
 }
 
+// 存储解析后 struct 的字段
 type structFields struct {
 	list      []field
 	nameIndex map[string]int
@@ -1210,15 +1236,19 @@ func (x byIndex) Less(i, j int) bool {
 // typeFields returns a list of fields that JSON should recognize for the given type.
 // The algorithm is breadth-first search over the set of structs to include - the top struct
 // and then any reachable anonymous structs.
+// 解析 struct 包含的所有字段（广度优先）
 func typeFields(t reflect.Type) structFields {
 	// Anonymous fields to explore at the current level and the next.
+	// 当前层级的字段
 	current := []field{}
+	// 下一层级的字段
 	next := []field{{typ: t}}
 
 	// Count of queued names for current level and the next.
 	var count, nextCount map[reflect.Type]int
 
 	// Types already visited at an earlier level.
+	// 已访问过的字段
 	visited := map[reflect.Type]bool{}
 
 	// Fields found.
@@ -1231,38 +1261,52 @@ func typeFields(t reflect.Type) structFields {
 		current, next = next, current[:0]
 		count, nextCount = nextCount, map[reflect.Type]int{}
 
+		// 遍历当前level所有的字段
 		for _, f := range current {
+			// 已经访问过的字段
 			if visited[f.typ] {
 				continue
 			}
+			// 访问此字段
 			visited[f.typ] = true
 
 			// Scan f.typ for fields to include.
+			// 遍历结构体的所有字段
 			for i := 0; i < f.typ.NumField(); i++ {
+				// 当前字段
 				sf := f.typ.Field(i)
+				// 匿名字段
 				if sf.Anonymous {
 					t := sf.Type
+					// 指针类型取值
 					if t.Kind() == reflect.Pointer {
 						t = t.Elem()
 					}
+					// 私有的非结构体跳过
 					if !sf.IsExported() && t.Kind() != reflect.Struct {
 						// Ignore embedded fields of unexported non-struct types.
 						continue
 					}
+					// 私有的嵌套字段会被嵌入原结构体
 					// Do not ignore embedded fields of unexported struct types
 					// since they may have exported fields.
 				} else if !sf.IsExported() {
+					// 私有字段跳过
 					// Ignore unexported non-embedded fields.
 					continue
 				}
 				tag := sf.Tag.Get("json")
+				// 跳过 `"json":"-"`
 				if tag == "-" {
 					continue
 				}
+				// 解析json标签
 				name, opts := parseTag(tag)
+				// 没有解析到tag设置的有效json字段名
 				if !isValidTag(name) {
 					name = ""
 				}
+				// todo
 				index := make([]int, len(f.index)+1)
 				copy(index, f.index)
 				index[len(f.index)] = i
@@ -1275,6 +1319,7 @@ func typeFields(t reflect.Type) structFields {
 
 				// Only strings, floats, integers, and booleans can be quoted.
 				quoted := false
+				// 包含string属性
 				if opts.Contains("string") {
 					switch ft.Kind() {
 					case reflect.Bool,
@@ -1293,10 +1338,11 @@ func typeFields(t reflect.Type) structFields {
 						name = sf.Name
 					}
 					field := field{
-						name:      name,
-						tag:       tagged,
-						index:     index,
-						typ:       ft,
+						name:  name,
+						tag:   tagged,
+						index: index,
+						typ:   ft,
+						// 是否忽略空值
 						omitEmpty: opts.Contains("omitempty"),
 						quoted:    quoted,
 					}
@@ -1410,9 +1456,11 @@ var fieldCache sync.Map // map[reflect.Type]structFields
 
 // cachedTypeFields is like typeFields but uses a cache to avoid repeated work.
 func cachedTypeFields(t reflect.Type) structFields {
+	// 获取缓存
 	if f, ok := fieldCache.Load(t); ok {
 		return f.(structFields)
 	}
+	// 创建
 	f, _ := fieldCache.LoadOrStore(t, typeFields(t))
 	return f.(structFields)
 }

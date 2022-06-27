@@ -175,6 +175,7 @@ func (d *decodeState) unmarshal(v any) error {
 	}
 
 	d.scan.reset()
+	// 跳过所有可以 skip 的 字符
 	d.scanWhile(scanSkipSpace)
 	// We decode rv not rv.Elem because the Unmarshaler interface
 	// test must be applied at the top level of the value.
@@ -209,7 +210,8 @@ type errorContext struct {
 
 // decodeState represents the state while decoding a JSON value.
 type decodeState struct {
-	data                  []byte
+	data []byte
+	// offset
 	off                   int // next read offset in data
 	opcode                int // last read result
 	scan                  scanner
@@ -441,6 +443,7 @@ func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnm
 	// If v is a named type and is addressable,
 	// start with its address, so that if the type has pointer methods,
 	// we find them.
+	// 尝试转换为指针类型 以寻找指针方法
 	if v.Kind() != reflect.Pointer && v.Type().Name() != "" && v.CanAddr() {
 		haveAddr = true
 		v = v.Addr()
@@ -468,13 +471,16 @@ func indirect(v reflect.Value, decodingNull bool) (Unmarshaler, encoding.TextUnm
 		// Prevent infinite loop if v is an interface pointing to its own address:
 		//     var v interface{}
 		//     v = &v
+		// 防止循环引用
 		if v.Elem().Kind() == reflect.Interface && v.Elem().Elem() == v {
 			v = v.Elem()
 			break
 		}
+		// 如果是空则设置零值
 		if v.IsNil() {
 			v.Set(reflect.New(v.Type().Elem()))
 		}
+		// 检查结构体是否定义了 Unmarshal 方法
 		if v.Type().NumMethod() > 0 && v.CanInterface() {
 			if u, ok := v.Interface().(Unmarshaler); ok {
 				return u, nil, reflect.Value{}
@@ -607,11 +613,13 @@ var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem(
 func (d *decodeState) object(v reflect.Value) error {
 	// Check for unmarshaler.
 	u, ut, pv := indirect(v, false)
+	// 定义了Unmarshal方法
 	if u != nil {
 		start := d.readIndex()
 		d.skip()
 		return u.UnmarshalJSON(d.data[start:d.off])
 	}
+	// 定义了UnmarshalText方法则报错
 	if ut != nil {
 		d.saveError(&UnmarshalTypeError{Value: "object", Type: v.Type(), Offset: int64(d.off)})
 		d.skip()
